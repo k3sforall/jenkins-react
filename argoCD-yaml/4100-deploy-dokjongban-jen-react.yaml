@@ -1,13 +1,13 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: dokjongban-react-study-deployment
+  name: dokjongban-jen-react-service-deployment
   namespace: default
   labels:
     domain: dokjongban-com
-    app: dokjongban-react-study
+    app: dokjongban-jen-react-service
     app.kubernetes.io/managed-by: argocd
-    app.kubernetes.io/instance: dokjongban-react-study
+    app.kubernetes.io/instance: dokjongban-jen-react-service
     dokjongban-react-track: blue
   annotations:
     kubernetes.io/change-cause: "version: ghcr.io/k3sforall/create-react-app-test-app:0.1.1"
@@ -17,18 +17,18 @@ spec:
   selector:
     matchLabels:
       domain: dokjongban-com
-      app: dokjongban-react-study
+      app: dokjongban-jen-react-service
       dokjongban-react-track: blue
   template:
     metadata:
       labels:
         domain: dokjongban-com
-        app: dokjongban-react-study
-        app.kubernetes.io/instance: dokjongban-react-study
+        app: dokjongban-jen-react-service
+        app.kubernetes.io/instance: dokjongban-jen-react-service
         dokjongban-react-track: blue
     spec:
       containers:
-      - name: dokjongban-react-study
+      - name: dokjongban-jen-react-service
         image: ghcr.io/k3sforall/create-react-app-test-app:sha-5073c67
         imagePullPolicy: IfNotPresent
         ports:
