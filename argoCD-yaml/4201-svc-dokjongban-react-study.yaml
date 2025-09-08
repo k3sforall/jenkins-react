@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: dokjongban-react-study-service
+  namespace: default
+  labels:
+    domain: dokjongban-com
+    app: dokjongban-react-study
+    app.kubernetes.io/managed-by: argocd
+    app.kubernetes.io/instance: dokjongban-react-study
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  type: ClusterIP
+  selector:
+    domain: dokjongban-com
+    app: dokjongban-react-study
+    dokjongban-react-track: blue
+  ports:
+    - port: 80
+      targetPort: 3000
+
