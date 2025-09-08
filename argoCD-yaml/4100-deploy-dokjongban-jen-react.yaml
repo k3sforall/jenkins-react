@@ -27,6 +27,9 @@ spec:
         app.kubernetes.io/instance: dokjongban-jen-react-service
         dokjongban-react-track: blue
     spec:
+      # ▼ GHCR 프라이빗 이미지 풀을 위한 자격증명 시크릿 참조 (default 네임스페이스에 존재해야 함)
+      imagePullSecrets:
+        - name: ghcr-dockerconfig
       containers:
       - name: dokjongban-jen-react-service
         image: ghcr.io/k3sforall/create-react-app-test-app:sha-5073c67
@@ -45,4 +48,3 @@ spec:
           requests:
             cpu: "100m"
             memory: "128Mi"
-
