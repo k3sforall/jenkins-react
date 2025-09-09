@@ -15,7 +15,7 @@ function App() {
           target="_blank"
           rel="noopener noreferrer"
         >
-           1000 jenkins 에서 빌드
+           2000 jenkins 에서 빌드
         </a>
       </header>
     </div>
