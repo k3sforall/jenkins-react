@@ -54,20 +54,19 @@ spec:
 
   environment {
     GIT_BRANCH   = 'main'                                            // [변경] 브랜치
-    GIT_REPO_URL = 'https://github.com/k3sforall/jenkins-react.git'  // [변경]
-    IMAGE_REPO   = 'ghcr.io/k3sforall/jenkins-react'                 // [변경]
-    DEPLOY_FILE  = 'argoCD-yaml/4100-deploy-dokjongban-jen-react.yaml' // [변경]
+    GIT_REPO_URL = 'https://github.com/k3sforall/jenkins-react.git'  // [변경] 리포 URL
+    IMAGE_REPO   = 'ghcr.io/k3sforall/jenkins-react'                 // [변경] GHCR 경로
+    DEPLOY_FILE  = 'argoCD-yaml/4100-deploy-dokjongban-jen-react.yaml' // [변경] image 라인 파일
   }
 
   options {
     disableConcurrentBuilds()
-    timestamps()
+    // timestamps()  <-- 플러그인 미설치 환경에서 오류이므로 제거
   }
 
   stages {
     stage('Checkout (SCM)') {
       steps {
-        // Multibranch는 자동 checkout되지만 명시적으로 보강
         checkout scm
       }
     }
@@ -113,6 +112,7 @@ spec:
                 docker info >/dev/null 2>&1 || { echo "[FAIL] dockerd not ready"; exit 1; }
 
                 echo "$GH_PAT" | docker login ghcr.io -u "$GH_USER" --password-stdin
+
                 docker build -t ${IMAGE_REPO}:${IMAGE_TAG} .
 
                 try_push() {
@@ -157,7 +157,7 @@ spec:
       steps {
         container('git') {
           withCredentials([usernamePassword(
-            credentialsId: 'github-pat',      // 여기의 Password가 PAT
+            credentialsId: 'github-pat',      // 리포 푸시용 PAT
             usernameVariable: 'GITUSER',
             passwordVariable: 'GITPAT'
           )]) {
