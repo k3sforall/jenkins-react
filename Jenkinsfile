@@ -1,7 +1,9 @@
+// Jenkinsfile — 루프 방지(봇/매니페스트 전용 커밋 스킵 + [skip ci])
+
 pipeline {
   agent {
     kubernetes {
-      defaultContainer 'jnlp'
+      label "jenkins-docker-pipeline"
       yaml """
 apiVersion: v1
 kind: Pod
@@ -9,143 +11,121 @@ metadata:
   labels:
     app: jenkins-docker-pipeline
 spec:
+  restartPolicy: Never
   serviceAccountName: default
   containers:
     - name: docker
       image: docker:27
-      command: ['sleep','infinity']
-      tty: true
+      command: ["sleep","infinity"]
       volumeMounts:
-        - name: workspace-volume
+        - name: workspace
           mountPath: /home/jenkins/agent
-
     - name: dind
       image: docker:27-dind
-      securityContext:
-        privileged: true
+      args: ["--host=tcp://0.0.0.0:2375","--storage-driver=overlay2"]
+      securityContext: { privileged: true }
       env:
         - name: DOCKER_TLS_CERTDIR
           value: ""
-      args:
-        - --host=tcp://0.0.0.0:2375
-        - --storage-driver=overlay2
       volumeMounts:
         - name: dind-storage
           mountPath: /var/lib/docker
-        - name: workspace-volume
+        - name: workspace
           mountPath: /home/jenkins/agent
-
-    - name: git
-      image: alpine/git:2.45.2
-      command: ['sleep','infinity']
-      tty: true
+    - name: jnlp
+      image: jenkins/inbound-agent:3327.v868139a_d00e0-6
+      resources:
+        requests: { cpu: "100m", memory: "256Mi" }
       volumeMounts:
-        - name: workspace-volume
+        - name: workspace
           mountPath: /home/jenkins/agent
-
   volumes:
-    - name: workspace-volume
-      emptyDir: {}
     - name: dind-storage
+      emptyDir: {}
+    - name: workspace
       emptyDir: {}
 """
     }
   }
 
   environment {
-    GIT_BRANCH   = 'main'                                            // [변경] 브랜치
-    GIT_REPO_URL = 'https://github.com/k3sforall/jenkins-react.git'  // [변경] 리포 URL
-    IMAGE_REPO   = 'ghcr.io/k3sforall/jenkins-react'                 // [변경] GHCR 경로
-    DEPLOY_FILE  = 'argoCD-yaml/4100-deploy-dokjongban-jen-react.yaml' // [변경] image 라인 파일
+    DOCKER_HOST = "tcp://localhost:2375"
+
+    // ★ 필요 시 변경
+    GH_OWNER   = "k3sforall"                           // GitHub 소유자
+    GH_REPO    = "jenkins-react"                       // 리포명
+    GHCR_REPO  = "ghcr.io/k3sforall/jenkins-react"     // GHCR 경로
+    ARGO_FILE  = "argoCD-yaml/4100-deploy-dokjongban-jen-react.yaml"  // 태그 바꿀 매니페스트
   }
 
   options {
+    buildDiscarder(logRotator(numToKeepStr: '20'))
     disableConcurrentBuilds()
-    // timestamps()  <-- 플러그인 미설치 환경에서 오류이므로 제거
+    timeout(time: 60, unit: 'MINUTES')
   }
 
   stages {
     stage('Checkout (SCM)') {
+      steps { checkout scm }
+    }
+
+    // 🔒 루프 방지 가드: 봇 커밋/매니페스트 전용 변경이면 SKIP_CI=true 설정
+    stage('Guard (skip bot/manifest-only)') {
       steps {
-        checkout scm
+        container('docker') {
+          script {
+            sh 'git config --global --add safe.directory "$PWD" || true'
+            def authorEmail = sh(returnStdout:true, script:"git log -1 --pretty=%ae").trim()
+            def subject     = sh(returnStdout:true, script:"git log -1 --pretty=%s").trim()
+            def changedRaw  = sh(returnStdout:true, script:"git diff-tree --no-commit-id --name-only -r HEAD || true").trim()
+            def changedList = changedRaw ? changedRaw.split('\\r?\\n') as List : []
+            def manifestOnly = (changedList && changedList.every{ it.startsWith('argoCD-yaml/') })
+            def isBotCommit  = (authorEmail == 'jenkins-bot@local') || subject.contains('[skip ci]') || subject.startsWith('CI: update image tag')
+
+            env.SKIP_CI = (manifestOnly || isBotCommit) ? 'true' : 'false'
+
+            echo "authorEmail=${authorEmail}"
+            echo "subject=${subject}"
+            echo "changed:\n${changedList.join('\n')}"
+            echo "manifestOnly=${manifestOnly}, isBotCommit=${isBotCommit}, SKIP_CI=${env.SKIP_CI}"
+          }
+        }
       }
     }
 
     stage('Compute Image Tag') {
+      when { expression { return env.SKIP_CI != 'true' } }
       steps {
-        container('git') {
+        container('docker') {
           script {
-            env.GIT_SHA = sh(returnStdout: true, script: '''
-              set -e
-              cd "$WORKSPACE"
-              git config --global --add safe.directory "$WORKSPACE" || true
-              git rev-parse --short=7 HEAD || echo manual
-            ''').trim()
-            env.IMAGE_TAG = "sha-${env.GIT_SHA}"
+            def short = sh(returnStdout:true, script:"git rev-parse --short=7 HEAD || echo manual").trim()
+            env.IMAGE_TAG = "sha-${short}"
+            echo "IMAGE_TAG=${env.IMAGE_TAG}"
           }
-          echo "IMAGE_TAG=${env.IMAGE_TAG}"
         }
       }
     }
 
     stage('Build & Push to GHCR (resilient)') {
+      when { expression { return env.SKIP_CI != 'true' } }
       steps {
         container('docker') {
-          withEnv(['DOCKER_HOST=tcp://localhost:2375']) {
-            withCredentials([usernamePassword(
-              credentialsId: 'ghcr-creds',    // GHCR PAT(write:packages)
-              usernameVariable: 'GH_USER',
-              passwordVariable: 'GH_PAT'
-            )]) {
+          withEnv(["DOCKER_CLI_EXPERIMENTAL=enabled"]) {
+            withCredentials([usernamePassword(credentialsId: 'ghcr-creds', usernameVariable: 'GH_USER', passwordVariable: 'GH_PAT')]) {
               sh '''
                 set -euxo pipefail
-
                 echo "[WAIT] Checking dockerd on ${DOCKER_HOST}"
                 for i in $(seq 1 60); do
                   if docker info >/dev/null 2>&1; then
-                    echo "[OK] dockerd is ready"
-                    break
+                    echo "[OK] dockerd is ready"; break
                   fi
-                  echo "[...] waiting for dockerd... ($i/60)"
-                  sleep 2
+                  sleep 1
                 done
-                docker info >/dev/null 2>&1 || { echo "[FAIL] dockerd not ready"; exit 1; }
+                docker info
 
                 echo "$GH_PAT" | docker login ghcr.io -u "$GH_USER" --password-stdin
-
-                docker build -t ${IMAGE_REPO}:${IMAGE_TAG} .
-
-                try_push() {
-                  set +e
-                  docker push ${IMAGE_REPO}:${IMAGE_TAG} 2>push.err.log
-                  rc=$?
-                  set -e
-                  if [ $rc -eq 0 ]; then
-                    echo "[OK] docker push succeeded"
-                    return 0
-                  fi
-                  if grep -qi 'unknown blob' push.err.log; then
-                    echo "[WARN] unknown blob detected. Falling back to skopeo copy..."
-                    apk add --no-cache skopeo || true
-                    skopeo copy --src-daemon-host=${DOCKER_HOST} \
-                      docker-daemon:${IMAGE_REPO}:${IMAGE_TAG} \
-                      docker://${IMAGE_REPO}:${IMAGE_TAG}
-                    return $?
-                  fi
-                  return $rc
-                }
-
-                n=0
-                until try_push; do
-                  n=$((n+1))
-                  if [ $n -ge 5 ]; then
-                    echo "[FAIL] push failed after ${n} attempts"
-                    exit 1
-                  fi
-                  backoff=$(( n * 5 ))
-                  echo "[RETRY] attempt ${n}/5 — sleeping ${backoff}s"
-                  sleep ${backoff}
-                done
+                docker build -t ${GHCR_REPO}:${IMAGE_TAG} .
+                docker push ${GHCR_REPO}:${IMAGE_TAG}
               '''
             }
           }
@@ -154,31 +134,24 @@ spec:
     }
 
     stage('Update ArgoCD Manifest & Push') {
+      when { expression { return env.SKIP_CI != 'true' } }
       steps {
-        container('git') {
-          withCredentials([usernamePassword(
-            credentialsId: 'github-pat',      // 리포 푸시용 PAT
-            usernameVariable: 'GITUSER',
-            passwordVariable: 'GITPAT'
-          )]) {
+        container('docker') {
+          withCredentials([usernamePassword(credentialsId: 'github-pat', usernameVariable: 'GITUSER', passwordVariable: 'GITPAT')]) {
             sh '''
               set -euxo pipefail
-              cd "$WORKSPACE"
-              git config --global --add safe.directory "$WORKSPACE" || true
-              git config user.name  "jenkins-bot"
-              git config user.email "ci@example.local"
+              WORK=/home/jenkins/agent/work-update
+              rm -rf "$WORK"
+              git clone "https://${GITUSER}:${GITPAT}@github.com/${GH_OWNER}/${GH_REPO}.git" "$WORK"
+              cd "$WORK"
 
-              # 첫 번째 image: 라인만 안전 치환
-              awk -v repl="        image: ${IMAGE_REPO}:${IMAGE_TAG}" '
-                done==0 && $0 ~ /^[[:space:]]*image:[[:space:]]/ { print repl; done=1; next }
-                { print }
-              ' "${DEPLOY_FILE}" > "${DEPLOY_FILE}.tmp"
-              mv "${DEPLOY_FILE}.tmp" "${DEPLOY_FILE}"
+              # image 태그만 교체
+              sed -i -E "s|(image:\\s*${GHCR_REPO}:).*|\\1${IMAGE_TAG}|" "${ARGO_FILE}"
 
-              git add "${DEPLOY_FILE}"
-              git commit -m "ci: update image to ${IMAGE_REPO}:${IMAGE_TAG}" || true
-              git remote set-url origin "https://${GITUSER}:${GITPAT}@github.com/k3sforall/jenkins-react.git"  # [변경] 필요 시 리포 교체
-              git push origin "HEAD:${GIT_BRANCH}"
+              git add "${ARGO_FILE}"
+              git -c user.name="jenkins-bot" -c user.email="jenkins-bot@local" \
+                  commit -m "CI: update image tag to ${IMAGE_TAG} [skip ci]"
+              git push origin HEAD:main
             '''
           }
         }
@@ -187,7 +160,15 @@ spec:
   }
 
   post {
-    success { echo '✅ Push 트리거 → GHCR 푸시 → 매니페스트 갱신 → Argo CD 배포 완료' }
-    failure { echo '❌ 실패 — 마지막 단계 콘솔 로그를 확인해 주세요.' }
+    success {
+      script {
+        if (env.SKIP_CI == 'true') {
+          echo "✅ 스킵: 봇 커밋/매니페스트 전용 변경 감지(루프 방지)."
+        } else {
+          echo "✅ 성공: ${env.IMAGE_TAG} 빌드/푸시 & 매니페스트 갱신 완료."
+        }
+      }
+    }
+    failure { echo "❌ 실패 — 콘솔 로그 확인" }
   }
 }
