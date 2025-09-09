@@ -15,7 +15,7 @@ function App() {
           target="_blank"
           rel="noopener noreferrer"
         >
-           66666 github push jenkins 빌드
+           88888 github push jenkins 빌드
         </a>
       </header>
     </div>
