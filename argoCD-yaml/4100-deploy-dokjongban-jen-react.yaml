@@ -32,7 +32,7 @@ spec:
         - name: ghcr-dockerconfig
       containers:
       - name: dokjongban-jen-react-service
-        image: ghcr.io/k3sforall/jenkins-react:sha-62a3198
+        image: ghcr.io/k3sforall/jenkins-react:sha-f855de9
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 3000
