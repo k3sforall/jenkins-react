@@ -1,4 +1,4 @@
-// Jenkinsfile — 루프만 정확히 스킵(봇+매니페스트-전용 커밋), 앱 변경은 반드시 빌드
+// Jenkinsfile — 루프 방지(봇+매니페스트 전용 커밋만 스킵) & def 미사용 안전버전
 
 pipeline {
   agent {
@@ -75,36 +75,46 @@ spec:
       steps { checkout scm }
     }
 
-    // 🔒 루프 방지: "우리 봇" + "매니페스트만 변경"인 커밋만 스킵
+    // 🔒 루프 방지: "우리 봇 커밋" + "매니페스트만 변경"일 때만 스킵
     stage('Guard (skip only bot+manifest-only commit)') {
       steps {
         container('git') {
-          script {
-            sh 'git config --global --add safe.directory "$PWD" || true'
+          sh '''
+            set -e
+            git config --global --add safe.directory "$PWD" || true
 
-            // 가장 최근 커밋 메타/변경파일 — shallow 환경에서도 동작
-            def authorEmail = sh(returnStdout:true, script:"git log -1 --pretty=%ae").trim()
-            def subject     = sh(returnStdout:true, script:"git log -1 --pretty=%s").trim()
+            authorEmail="$(git log -1 --pretty=%ae || true)"
+            subject="$(git log -1 --pretty=%s || true)"
+            changed="$(git show --pretty='' --name-only HEAD || true)"
 
-            // 부모가 없어도 동작하도록: HEAD의 변경 파일만 추출
-            def changedRaw  = sh(returnStdout:true, script:"git show --pretty='' --name-only HEAD || true").trim()
-            def changedList = changedRaw ? changedRaw.split('\\r?\\n') as List : []
+            manifest_only=false
+            if [ -n "$changed" ]; then
+              # 하나라도 argoCD-yaml/ 아닌 변경이 있으면 manifest_only=false
+              if echo "$changed" | awk '!/^argoCD-yaml\\//' | grep -q . ; then
+                manifest_only=false
+              else
+                manifest_only=true
+              fi
+            fi
 
-            // 매니페스트만 변했는지?
-            def manifestOnly = (changedList && changedList.every{ it.startsWith('argoCD-yaml/') })
+            is_bot_author=false; [ "$authorEmail" = "jenkins-bot@local" ] && is_bot_author=true
+            is_bot_subject=false
+            echo "$subject" | grep -q "\\[skip ci\\]" && is_bot_subject=true
+            echo "$subject" | grep -q "^CI: update image tag" && is_bot_subject=true
 
-            // "우리 봇" 정의(커밋 보낸 주체가 봇인지 + 봇 커밋 메시지 관례)
-            def isBotAuthor  = (authorEmail == 'jenkins-bot@local')
-            def isBotSubject = subject.contains('[skip ci]') || subject.startsWith('CI: update image tag')
+            SKIP_CI=false
+            if [ "$manifest_only" = "true" ] && { [ "$is_bot_author" = "true" ] || [ "$is_bot_subject" = "true" ]; }; then
+              SKIP_CI=true
+            fi
 
-            // 👉 진짜로 스킵해야 할 경우(루프 차단)
-            env.SKIP_CI = (manifestOnly && (isBotAuthor || isBotSubject)) ? 'true' : 'false'
-
-            echo "authorEmail=${authorEmail}"
-            echo "subject=${subject}"
-            echo "changed:\n${changedList.join('\n')}"
-            echo "manifestOnly=${manifestOnly}, isBotAuthor=${isBotAuthor}, isBotSubject=${isBotSubject}, SKIP_CI=${env.SKIP_CI}"
-          }
+            printf "%s" "$SKIP_CI" > .skip_ci
+            echo "authorEmail=$authorEmail"
+            echo "subject=$subject"
+            echo "changed-files:"
+            echo "$changed"
+            echo "manifest_only=$manifest_only is_bot_author=$is_bot_author is_bot_subject=$is_bot_subject SKIP_CI=$SKIP_CI"
+          '''
+          script { env.SKIP_CI = readFile('.skip_ci').trim() }
         }
       }
     }
@@ -113,11 +123,13 @@ spec:
       when { expression { return env.SKIP_CI != 'true' } }
       steps {
         container('git') {
-          script {
-            def short = sh(returnStdout:true, script:"git rev-parse --short=7 HEAD || echo manual").trim()
-            env.IMAGE_TAG = "sha-${short}"
-            echo "IMAGE_TAG=${env.IMAGE_TAG}"
-          }
+          sh '''
+            set -e
+            SHORT="$(git rev-parse --short=7 HEAD || echo manual)"
+            printf "sha-%s" "$SHORT" > image_tag.txt
+          '''
+          script { env.IMAGE_TAG = readFile('image_tag.txt').trim() }
+          echo "IMAGE_TAG=${env.IMAGE_TAG}"
         }
       }
     }
