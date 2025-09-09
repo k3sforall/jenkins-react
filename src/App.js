@@ -15,8 +15,7 @@ function App() {
           target="_blank"
           rel="noopener noreferrer"
         >
-           1 application-kr studywithme-kr 20:23 Learn React
-           2 han 
+           1000 jenkins 에서 빌드
         </a>
       </header>
     </div>
